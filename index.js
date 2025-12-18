@@ -64,6 +64,8 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
+
+
 // --- MongoDB Connection & Server Start ---
 let db;
 
@@ -87,6 +89,26 @@ async function run() {
     const usersCollection = db.collection('users');
     const issuesCollection = db.collection('issues');
     const paymentsCollection = db.collection('payments');
+
+    // --- Custom Middleware ---
+    const verifyAdmin = async (req, res, next) => {
+        const email = req.user.email;
+        const user = await usersCollection.findOne({ email });
+        const isAdmin = user?.role === 'admin';
+        if (!isAdmin) {
+            return res.status(403).json({ message: 'Forbidden access: Admin only' });
+        }
+        next();
+    };
+
+    const verifyStaff = async (req, res, next) => {
+        const email = req.user.email;
+        const user = await usersCollection.findOne({ email });
+        if (user?.role !== 'staff' && user?.role !== 'admin') {
+            return res.status(403).json({ message: 'Forbidden access: Staff or Admin only' });
+        }
+        next();
+    };
 
     // --- Routes ---
 
@@ -140,8 +162,23 @@ async function run() {
       }
     });
 
+    // Update User Profile
+    app.put('/users/me', verifyToken, async (req, res) => {
+        try {
+            const { name, photoURL } = req.body;
+            const updatedUser = await usersCollection.findOneAndUpdate(
+                { email: req.user.email },
+                { $set: { name, photoURL } },
+                { returnDocument: 'after' }
+            );
+            res.json(updatedUser);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+
     // Admin: Get all users
-    app.get('/users', verifyToken, async (req, res) => {
+    app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
       try {
         const allUsers = await usersCollection.find({}).toArray();
         res.json(allUsers);
@@ -152,7 +189,7 @@ async function run() {
 
     // Admin: Make User Admin/Staff or Block
     // Corresponds to PATCH /users/:id/role
-    app.patch('/users/:id/role', verifyToken, async (req, res) => {
+    app.patch('/users/:id/role', verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { role } = req.body;
         const result = await usersCollection.findOneAndUpdate(
@@ -167,7 +204,7 @@ async function run() {
     });
 
     // Block/Unblock User
-    app.patch('/users/:id/block', verifyToken, async (req, res) => {
+    app.patch('/users/:id/block', verifyToken, verifyAdmin, async (req, res) => {
         try {
             const { isBlocked } = req.body;
             const result = await usersCollection.findOneAndUpdate(
@@ -182,7 +219,7 @@ async function run() {
     });
 
     // Create Staff (Admin only)
-    app.post('/users/staff', verifyToken, async (req, res) => {
+    app.post('/users/staff', verifyToken, verifyAdmin, async (req, res) => {
         try {
             const { email, password, name } = req.body;
             
@@ -217,7 +254,7 @@ async function run() {
     });
 
     // Delete User (Staff/Admin)
-    app.delete('/users/:id', verifyToken, async (req, res) => {
+    app.delete('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
          try {
              // Delete from DB
              const user = await usersCollection.findOne({ _id: new ObjectId(req.params.id) });
@@ -247,6 +284,10 @@ async function run() {
             const user = await usersCollection.findOne({ email: req.user.email });
             if (!user) return res.status(404).json({ message: "User not found" });
 
+            if (user.isBlocked) {
+                return res.status(403).json({ message: "Account is blocked" });
+            }
+
             // Check limits for free users
             if (user.subscriptionStatus === 'free') {
                  const issueCount = await issuesCollection.countDocuments({ author: user._id });
@@ -261,6 +302,7 @@ async function run() {
                 upvotes: [],
                 upvoteCount: 0,
                 status: 'pending', // Default status if not provided
+                priority: 'normal',
                 timeline: [{
                     status: 'pending',
                     message: 'Issue reported by citizen',
@@ -273,6 +315,33 @@ async function run() {
             const result = await issuesCollection.insertOne(newIssue);
             const insertedIssue = await issuesCollection.findOne({ _id: result.insertedId });
             res.status(201).json(insertedIssue);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+
+    // Citizen Status
+    app.get('/stats/citizen', verifyToken, async (req, res) => {
+        try {
+            const user = await usersCollection.findOne({ email: req.user.email });
+            if (!user) return res.status(404).json({ message: "User not found" });
+
+            const total = await issuesCollection.countDocuments({ author: user._id });
+            const pending = await issuesCollection.countDocuments({ author: user._id, status: 'pending' });
+            const inProgress = await issuesCollection.countDocuments({ 
+                author: user._id, 
+                status: { $in: ['in-progress', 'processing'] } 
+            });
+            const resolved = await issuesCollection.countDocuments({ author: user._id, status: 'resolved' });
+            const paymentCount = await paymentsCollection.countDocuments({ user: user._id });
+
+            res.json({
+                total,
+                pending,
+                inProgress,
+                resolved,
+                paymentCount
+            });
         } catch (error) {
             res.status(500).json({ message: error.message });
         }
@@ -318,6 +387,8 @@ async function run() {
             // Aggregation pipeline for Populate equivalent
             const pipeline = [
                 { $match: query },
+                // Default priority for old docs
+                { $addFields: { priority: { $ifNull: ["$priority", "normal"] } } },
                 // Sort
                 { $sort: { priority: 1, createdAt: -1 } },
                 // Pagination
@@ -429,7 +500,7 @@ async function run() {
     });
 
     // Update Issue Status
-    app.patch('/issues/:id/status', verifyToken, async (req, res) => {
+    app.patch('/issues/:id/status', verifyToken, verifyStaff, async (req, res) => {
         try {
             const { status } = req.body;
             const user = await usersCollection.findOne({ email: req.user.email });
@@ -464,10 +535,43 @@ async function run() {
         }
     });
 
+    // Add Progress Update (Staff)
+    app.post('/issues/:id/progress', verifyToken, verifyStaff, async (req, res) => {
+        try {
+            const { message } = req.body;
+            const user = await usersCollection.findOne({ email: req.user.email });
+            if (!user) return res.status(404).json({ message: "User not found" });
+
+            const issueId = new ObjectId(req.params.id);
+            const issue = await issuesCollection.findOne({ _id: issueId });
+            if(!issue) return res.status(404).json({ message: "Issue not found" });
+            
+            const result = await issuesCollection.findOneAndUpdate(
+                { _id: issueId },
+                {
+                    $push: {
+                        timeline: {
+                            status: issue.status, // Keep current status
+                            message: message,
+                            updatedBy: user.name,
+                            date: new Date()
+                        }
+                    }
+                },
+                { returnDocument: 'after' }
+            );
+
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+
     // Upvote Issue
     app.patch('/issues/:id/upvote', verifyToken, async (req, res) => {
         try {
             const user = await usersCollection.findOne({ email: req.user.email });
+            if (user.isBlocked) return res.status(403).json({ message: "Account is blocked" });
             const issueId = new ObjectId(req.params.id);
             const issue = await issuesCollection.findOne({ _id: issueId });
 
@@ -505,14 +609,24 @@ async function run() {
     });
 
     // Assign Staff
-    app.patch('/issues/:id/assign', verifyToken, async (req, res) => {
+    app.patch('/issues/:id/assign', verifyToken, verifyAdmin, async (req, res) => {
         try {
             const { staffId } = req.body;
-            const user = await usersCollection.findOne({ email: req.user.email });
-            if (user.role !== 'admin') return res.status(403).json({ message: "Admin only" });
+            console.log(`Assigning staff ${staffId} to issue ${req.params.id} by ${req.user.email}`);
 
+            const user = await usersCollection.findOne({ email: req.user.email });
+            // verifyAdmin middleware already checks this, but extra check is fine or remove it. 
+            // Previous code had: if (user.role !== 'admin') return res.status(403).json({ message: "Admin only" });
+            
             const staff = await usersCollection.findOne({ _id: new ObjectId(staffId) });
-            if (!staff || staff.role !== 'staff') return res.status(400).json({ message: "Invalid staff" });
+            if (!staff) {
+                console.log("Staff not found");
+                return res.status(400).json({ message: "Invalid staff ID" });
+            }
+            if (staff.role !== 'staff') {
+                console.log(`User ${staff.email} is not staff.`);
+                return res.status(400).json({ message: "User is not a staff member" });
+            }
 
             const issueId = new ObjectId(req.params.id);
             const issue = await issuesCollection.findOne({ _id: issueId });
@@ -536,6 +650,7 @@ async function run() {
             );
             res.json(result);
         } catch (error) {
+            console.error("Assign error:", error);
             res.status(500).json({ message: error.message });
         }
     });
@@ -560,6 +675,38 @@ async function run() {
         }
     });
 
+    // Update Issue Details (Author only)
+    app.put('/issues/:id', verifyToken, async (req, res) => {
+        try {
+            const { title, description, location, image } = req.body;
+            const user = await usersCollection.findOne({ email: req.user.email });
+            if (user.isBlocked) return res.status(403).json({ message: "Account is blocked" });
+            const issueId = new ObjectId(req.params.id);
+            const issue = await issuesCollection.findOne({ _id: issueId });
+
+            if (!issue) return res.status(404).json({ message: "Issue not found" });
+
+            if (issue.author.toString() !== user._id.toString()) {
+                return res.status(403).json({ message: "Access denied" });
+            }
+            
+            if (issue.status !== 'pending') {
+                 return res.status(400).json({ message: "Cannot edit non-pending issues" });
+            }
+
+            const updateDoc = {
+                $set: {
+                    title, description, location, image
+                }
+            };
+
+            const result = await issuesCollection.updateOne({ _id: issueId }, updateDoc);
+            res.json(result);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+
     // ===========================
     // PAYMENT ROUTES
     // ===========================
@@ -570,6 +717,8 @@ async function run() {
             const { amount, purpose, issueId, paymentMethodId } = req.body;
             const user = await usersCollection.findOne({ email: req.user.email });
             if (!user) return res.status(404).json({ message: "User not found" });
+
+            if (user.isBlocked) return res.status(403).json({ message: "Account is blocked" });
 
             const transactionId = `txn_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 
@@ -617,8 +766,53 @@ async function run() {
         }
     });
 
+    // Create Payment Intent
+    app.post('/create-payment-intent', verifyToken, async (req, res) => {
+        try {
+            const { price } = req.body;
+            const amount = parseInt(price * 100); 
+            
+            // Ensure process.env.STRIPE_SECRET_KEY is defined
+            if (!process.env.STRIPE_SECRET_KEY) {
+                console.error("STRIPE_SECRET_KEY is missing!");
+                return res.status(500).send({ message: "Server configuration error" });
+            }
+
+            const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: 'bdt', 
+                payment_method_types: ['card']
+            });
+            
+            console.log("Created PaymentIntent:", paymentIntent.id);
+
+            res.send({
+                clientSecret: paymentIntent.client_secret
+            });
+
+
+        } catch (error) {
+             res.status(500).send({ message: error.message });
+        }
+    });
+
+    // Get My Payments
+    app.get('/payments/me', verifyToken, async (req, res) => {
+        try {
+            const user = await usersCollection.findOne({ email: req.user.email });
+            if (!user) return res.status(404).json({ message: "User not found" });
+
+            const myPayments = await paymentsCollection.find({ user: user._id }).sort({ date: -1 }).toArray();
+            res.json(myPayments);
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
+    });
+
     // Admin: Get All Payments
-    app.get('/payments', verifyToken, async (req, res) => {
+    app.get('/payments', verifyToken, verifyAdmin, async (req, res) => {
         try {
             const pipeline = [
                 { $sort: { date: -1 } },
@@ -649,14 +843,58 @@ async function run() {
         }
     });
 
-    app.listen(port, () => {
-      console.log(`Server running on port ${port}`);
+    // Staff Stats
+    app.get('/stats/staff', verifyToken, verifyStaff, async (req, res) => {
+        try {
+            const user = await usersCollection.findOne({ email: req.user.email });
+            if (!user) return res.status(404).json({ message: "User not found" });
+
+
+            const assignedIssues = await issuesCollection.find({ assignedTo: user._id }).toArray();
+            
+            const totalAssigned = assignedIssues.length;
+            const resolvedCount = assignedIssues.filter(i => i.status === 'resolved').length;
+            // Assuming "Today's Task" implies currently active items
+            const todayTasks = assignedIssues.filter(i => i.status === 'pending' || i.status === 'in-progress').length;
+            
+            const statusDistribution = {
+                pending: assignedIssues.filter(i => i.status === 'pending').length,
+                inProgress: assignedIssues.filter(i => i.status === 'in-progress').length,
+                resolved: assignedIssues.filter(i => i.status === 'resolved').length,
+                closed: assignedIssues.filter(i => i.status === 'closed').length,
+            };
+
+            res.json({
+                totalAssigned,
+                resolvedCount,
+                todayTasks,
+                statusDistribution
+            });
+        } catch (error) {
+            res.status(500).json({ message: error.message });
+        }
     });
 
-  } catch (error) {
-    console.error("Error connecting to MongoDB:", error);
-    process.exit(1);
+    // Confirm connection
+    await client.db("admin").command({ ping: 1 });
+    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    
+    if (process.env.STRIPE_SECRET_KEY) {
+        console.log("Stripe Secret Key loaded successfully.");
+    } else {
+        console.error("WARNING: STRIPE_SECRET_KEY is missing in .env!");
+    }
+
+  } finally {
+    // await client.close();
   }
 }
-
 run().catch(console.dir);
+
+app.get('/', (req, res) => {
+    res.send('CityGuard Server is running')
+})
+
+app.listen(port, () => {
+    console.log(`CityGuard Server is running on port ${port}`);
+})
