@@ -321,7 +321,7 @@ async function run() {
         }
     });
 
-    // Citizen Status
+    // Citizen Status Stats
     app.get('/stats/citizen', verifyToken, async (req, res) => {
         try {
             const user = await usersCollection.findOne({ email: req.user.email });
