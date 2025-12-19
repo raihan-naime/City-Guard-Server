@@ -892,6 +892,7 @@ async function run() {
 }
 run().catch(console.dir);
 
+// Root Endpoint
 app.get('/', (req, res) => {
     res.send('CityGuard Server is running')
 })
