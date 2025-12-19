@@ -448,7 +448,7 @@ async function run() {
         }
     });
 
-    // Get Issue by ID
+    // Get Issue by ID with populated fields
     app.get('/issues/:id', async (req, res) => {
         try {
             const issueId = new ObjectId(req.params.id);
