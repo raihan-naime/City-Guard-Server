@@ -500,7 +500,7 @@ async function run() {
         }
     });
 
-    // Update Issue Status
+    // Update Issue Status (Staff/Admin)
     app.patch('/issues/:id/status', verifyToken, verifyStaff, async (req, res) => {
         try {
             const { status } = req.body;
