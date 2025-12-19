@@ -656,7 +656,7 @@ async function run() {
         }
     });
 
-    // Delete Issue
+    // Delete Issue and its data (Author or Admin)
     app.delete('/issues/:id', verifyToken, async (req, res) => {
         try {
             const user = await usersCollection.findOne({ email: req.user.email });
