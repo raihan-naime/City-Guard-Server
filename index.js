@@ -568,7 +568,7 @@ async function run() {
         }
     });
 
-    // Upvote Issue
+    // Upvote Issue as Citizen
     app.patch('/issues/:id/upvote', verifyToken, async (req, res) => {
         try {
             const user = await usersCollection.findOne({ email: req.user.email });
