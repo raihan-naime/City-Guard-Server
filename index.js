@@ -100,7 +100,7 @@ async function run() {
         }
         next();
     };
-
+    // logic to verify staff or admin
     const verifyStaff = async (req, res, next) => {
         const email = req.user.email;
         const user = await usersCollection.findOne({ email });
