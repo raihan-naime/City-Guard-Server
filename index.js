@@ -609,7 +609,7 @@ async function run() {
         }
     });
 
-    // Assign Staff
+    // Assign Staff to Issue (Admin only) 
     app.patch('/issues/:id/assign', verifyToken, verifyAdmin, async (req, res) => {
         try {
             const { staffId } = req.body;
