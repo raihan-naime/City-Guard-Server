@@ -311,7 +311,8 @@ async function run() {
                 }],
                 createdAt: new Date()
             };
-
+            console.log(newIssue);
+            
             const result = await issuesCollection.insertOne(newIssue);
             const insertedIssue = await issuesCollection.findOne({ _id: result.insertedId });
             res.status(201).json(insertedIssue);
