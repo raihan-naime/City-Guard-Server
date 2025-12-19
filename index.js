@@ -536,7 +536,7 @@ async function run() {
         }
     });
 
-    // Add Progress Update (Staff)
+    // Add Progress Update (Staff) to Issue Timeline
     app.post('/issues/:id/progress', verifyToken, verifyStaff, async (req, res) => {
         try {
             const { message } = req.body;
