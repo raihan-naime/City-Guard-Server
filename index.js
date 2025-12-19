@@ -278,7 +278,7 @@ async function run() {
     // ISSUE ROUTES
     // ===========================
 
-    // Create Issue
+    // Create Issue for Citizen
     app.post('/issues', verifyToken, async (req, res) => {
         try {
             const user = await usersCollection.findOne({ email: req.user.email });
