@@ -622,7 +622,7 @@ async function run() {
       }
     );
 
-    // Add Progress Update (Staff) to Issue Timeline
+    // Add Progress Update (Staff) to Issue Timeline .
     app.post(
       "/issues/:id/progress",
       verifyToken,
